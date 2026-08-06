@@ -1,7 +1,7 @@
 from jax import jit, random
 import os
 from ngclearn import numpy as jnp
-from hierarchical_pc import HierarchicalPredictiveCoding
+from pc import HierarchicalPredictiveCoding
 import sys, getopt as gopt, optparse, time
 from ngclearn.components.input_encoders.ganglionCell import _create_patches
 
