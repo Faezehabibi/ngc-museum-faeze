@@ -140,7 +140,7 @@ class SparseCoding():
                     "E1", 
                     shape=(in_dim, hid_dim), 
                     weight_init=DistributionGenerator.uniform(-0.2, 0.2),
-                    resist_scale=1., 
+                    g_conduct_factor=1., 
                     key=subkeys[2], 
                     batch_size=batch_size
                 )
