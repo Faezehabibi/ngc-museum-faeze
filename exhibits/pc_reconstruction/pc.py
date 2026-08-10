@@ -4,9 +4,9 @@ from jax import numpy as jnp, random, jit
 from ngclearn.utils.model_utils import normalize_matrix
 from ngclearn.utils.viz.synapse_plot import visualize
 from ngcsimlib.global_state import stateManager
-from ngclearn import MethodProcess, JointProcess, Context
-from ngclearn.utils.distribution_generator import DistributionGenerator as dist
+from ngclearn import MethodProcess, Context
 from ngclearn.components import (RateCell, HebbianPatchedSynapse, GaussianErrorCell)
+from ngclearn.components.input_encoders.ganglionCell import _reconstruct as reconstruct
 from ngclearn.components.input_encoders.ganglionCell import RetinalGanglionCell
 
 
@@ -23,7 +23,7 @@ class HierarchicalPredictiveCoding():
     | Node Name Structure:
     | p(z3) ; z3 -(z3-mu2)-> mu2 ;e2; z2
     | p(z2) ; z2 -(z2-mu1)-> mu1 ;e1; z1
-    | p(z1) ; z1 -(z1-mu0)-> mu0 ;e0; z0
+    | p(z1) ; z1 -(z1-mu0)-> mu0 ;e0
     | prior type applied for p(z3), p(z2), p(z1)
 
     Args:
@@ -121,6 +121,11 @@ class HierarchicalPredictiveCoding():
                  r3_prior=(None, 0.),
                  r2_prior=(None, 0.),
                  r1_prior=(None, 0.),
+                 # -------------   Lateral parameters  -------------
+                 use_lateral=False,
+                 adaptive_lateral=False,
+                 exc_inh=(0., 0.),
+                 lat_eta=0.,
                  # ═══════════   Synaptses parameters  ════════════
                  lr=0.05,                    ## M-step learning rate/step-size
                  synaptic_prior=("gaussian", 0.),
@@ -167,7 +172,6 @@ class HierarchicalPredictiveCoding():
         self.step_shape = step_shape
         self.batch_size = batch_size
         self.inPatch_dim = in_dim // n_inPatch
-
         ## ═══════════════ meta-parameters for model dynamic ═════════════
         self.input_encoder = input_encoder
         self.gauss_sigma = input_encoder_sigma
@@ -175,13 +179,14 @@ class HierarchicalPredictiveCoding():
         self.T = T                         ## number of E-steps to take (stimulus time = T * dt ms)
         self.dt = dt                       ## neural activity integration time constant (ms)
 
+        exc, inh = exc_inh
+        d3, d2, d1 = h3_dim // n_p3, h2_dim // n_p2, h1_dim // n_p1
+        exc_inh3 = (exc / (d3 - 1), inh / (d3 - 1))  # block_dim(z3) == d3
+        exc_inh2 = (exc / (d2 - 1), inh / (d2 - 1))  # block_dim(z2) == d2
+        exc_inh1 = (exc / (d1 - 1), inh / (d1 - 1))  # block_dim(z1) == d1
+
         ## ═════════════════════ Synaptses parameters ═══════════════════
         w_bound = 0.                                                     ## norm constraint value
-        opt_type = w_opt_type                                            ## synaptic (weights) optimization type
-
-        w3_init = dist.gaussian(mean=0., std=jnp.sqrt(2/h3_dim))         ## He initialization for layer-3 synapses
-        w2_init = dist.gaussian(mean=0., std=jnp.sqrt(2/h2_dim))         ## He initialization for layer-2 synapses
-        w1_init = dist.gaussian(mean=0., std=jnp.sqrt(2/h1_dim))         ## He initialization for layer-1  synapses
 
         # ═════════════════════════════════════════════════════════
         if load_dir is not None:
@@ -195,56 +200,69 @@ class HierarchicalPredictiveCoding():
                                                patch_shape=self.patch_shape,
                                                step_shape=self.step_shape,
                                                sigma = self.gauss_sigma,
+                                               batch_size=batch_size
                                                )
 
                 # ════════════════════════════════════════════
-                self.z0 = RateCell("z0", n_units=in_dim, tau_m=0.)
-                self.e0 = GaussianErrorCell("e0", n_units=in_dim, sigma=sigma_e0)
+                self.e0 = GaussianErrorCell("e0", n_units=in_dim, sigma=sigma_e0, batch_size=batch_size)
 
-                self.z1 = RateCell("z1", n_units=h1_dim, tau_m=tau_m, act_fx=act_fx, prior=r1_prior
+                self.z1 = RateCell("z1", n_units=h1_dim, batch_size=batch_size,
+                                   tau_m=tau_m, act_fx=act_fx, prior=r1_prior,
+                                   use_lateral=use_lateral,
+                                   adaptive_lateral=adaptive_lateral,
+                                   n_patch=self.n_p1,
+                                   exc_inh=exc_inh1,
+                                   Wl_eta=lat_eta
                                    )
-                self.e1 = GaussianErrorCell("e1", n_units=h1_dim, sigma=sigma_e1)
+                self.e1 = GaussianErrorCell("e1", n_units=h1_dim, sigma=sigma_e1, batch_size=batch_size)
 
-                self.z2 = RateCell("z2", n_units=h2_dim, tau_m=tau_m, act_fx=act_fx, prior=r2_prior
+                self.z2 = RateCell("z2", n_units=h2_dim, batch_size=batch_size,
+                                   tau_m=tau_m, act_fx=act_fx, prior=r2_prior,
+                                   use_lateral=use_lateral,
+                                   adaptive_lateral=adaptive_lateral,
+                                   n_patch=self.n_p2,
+                                   exc_inh=exc_inh2,
+                                   Wl_eta=lat_eta
                                    )
-                self.e2 = GaussianErrorCell("e2", n_units=h2_dim, sigma=sigma_e2)
+                self.e2 = GaussianErrorCell("e2", n_units=h2_dim, sigma=sigma_e2, batch_size=batch_size)
 
-                self.z3 = RateCell("z3", n_units=h3_dim, tau_m=tau_m, act_fx=act_fx, prior=r3_prior
+                self.z3 = RateCell("z3", n_units=h3_dim, batch_size=batch_size,
+                                   tau_m=tau_m, act_fx=act_fx, prior=r3_prior,
+                                   use_lateral=use_lateral,
+                                   adaptive_lateral=adaptive_lateral,
+                                   n_patch=self.n_p3,
+                                   exc_inh=exc_inh3,
+                                   Wl_eta=lat_eta
                                    )
 
                 # ════════════════════════════════════════════
-                self.W3 = HebbianPatchedSynapse("W3",
-                                         shape=(h3_dim, h2_dim),
-                                         n_sub_models=self.n_p3,      ## number of modules in the layer
-                                         sign_value=-1.,              ## -1 means M-step solve minimization problem
-                                         optim_type=opt_type,
-                                         eta=lr,
-                                         weight_init=w3_init,
-                                         prior=synaptic_prior,
-                                         w_bound=w_bound,
-                                         key=subkeys[2]
-                                         )
-                self.W2 = HebbianPatchedSynapse("W2",
-                                         shape=(h2_dim, h1_dim),
-                                         n_sub_models=self.n_p2,      ## number of modules in the layer
-                                         sign_value=-1.,              ## -1 means M-step solve minimization problem
-                                         optim_type=opt_type,
-                                         eta=lr,
-                                         weight_init=w2_init,
-                                         prior=synaptic_prior,
-                                         w_bound=w_bound,
-                                         key=subkeys[1]
-                                         )
-                self.W1 = HebbianPatchedSynapse("W1", shape=(h1_dim, in_dim),
-                                         n_sub_models=n_p1,            ## number of modules in the layer
-                                         sign_value=-1.,               ## -1 means M-step solve minimization problem
-                                         optim_type=opt_type,
-                                         eta=lr,
-                                         weight_init=w1_init,
-                                         prior=synaptic_prior,
-                                         w_bound=w_bound,
-                                         key=subkeys[0]
-                                         )
+                self.W3 = HebbianPatchedSynapse("W3", shape=(h3_dim, h2_dim), batch_size=batch_size,
+                                                 n_sub_models=self.n_p3,      ## number of modules in the layer
+                                                 prior=synaptic_prior,
+                                                 optim_type=w_opt_type,
+                                                 w_bound=w_bound,
+                                                 sign_value=-1.,              ## -1 means M-step solve minimization problem
+                                                 eta=lr,
+                                                 key=subkeys[2]
+                                                 )
+                self.W2 = HebbianPatchedSynapse("W2", shape=(h2_dim, h1_dim), batch_size=batch_size,
+                                                n_sub_models=self.n_p2,      ## number of modules in the layer
+                                                prior=synaptic_prior,
+                                                optim_type=w_opt_type,
+                                                w_bound=w_bound,
+                                                sign_value=-1.,              ## -1 means M-step solve minimization problem
+                                                eta=lr,
+                                                key=subkeys[1]
+                                                )
+                self.W1 = HebbianPatchedSynapse("W1", shape=(h1_dim, in_dim), batch_size=batch_size,
+                                                 n_sub_models=n_p1,            ## number of modules in the layer
+                                                 prior=synaptic_prior,
+                                                 optim_type=w_opt_type,
+                                                 w_bound=w_bound,
+                                                 sign_value=-1.,               ## -1 means M-step solve minimization problem
+                                                 eta=lr,
+                                                 key=subkeys[0]
+                                                 )
 
                 # ═════════════════════════════════════════════════════════
                 ## since this model will operate with batches, we need to
@@ -302,7 +320,6 @@ class HierarchicalPredictiveCoding():
                                 >> self.z3.reset
                                 >> self.z2.reset
                                 >> self.z1.reset
-                                >> self.z0.reset
                                 >> self.e2.reset
                                 >> self.e1.reset
                                 >> self.e0.reset
@@ -312,7 +329,6 @@ class HierarchicalPredictiveCoding():
                                 )
                 self.advance_process = (MethodProcess(name="advance_process")
                                 >> self.RGC.advance_state
-                                >> self.z0.advance_state
                                 >> self.z3.advance_state
                                 >> self.z2.advance_state
                                 >> self.z1.advance_state
@@ -327,6 +343,9 @@ class HierarchicalPredictiveCoding():
                                 >> self.W1.evolve
                                 >> self.W2.evolve
                                 >> self.W3.evolve
+                                >> self.z1.evolve
+                                >> self.z2.evolve
+                                >> self.z3.evolve
                                 )
 
     def batch_setup(self):
@@ -336,7 +355,6 @@ class HierarchicalPredictiveCoding():
         self.z3.batch_size = batch_size
         self.z2.batch_size = batch_size
         self.z1.batch_size = batch_size
-        self.z0.batch_size = batch_size
 
         self.e2.batch_size = batch_size
         self.e1.batch_size = batch_size
@@ -346,14 +364,10 @@ class HierarchicalPredictiveCoding():
         self.W2.batch_size = batch_size
         self.W1.batch_size = batch_size
 
-        # Viet: Simply setting the batch size of the components
-        #  does not change the shape of the compartment values, we need
-        #  to reinitialize the compartment values to reflect the new batch size dimension
         self.RGC.reset()
         self.z3.reset()
         self.z2.reset()
         self.z1.reset()
-        self.z0.reset()
         self.e2.reset()
         self.e1.reset()
         self.e0.reset()
@@ -374,11 +388,7 @@ class HierarchicalPredictiveCoding():
 
     def _advance_process(self, obs):
       # several E-steps, can use for loop or scan
-      # for i in range(self.T):
-      #   self.clamp_stimuli(obs)
-      #   z_codes = self.advance_process.run(t=self.dt * i, dt=self.dt)
       self.clamp_stimuli(obs)
-      # print(f"[_advance_process] obs shape: {obs.shape}, e0 dtarget shape: {self.e0.dtarget.get().shape}, e0 dmu shape: {self.e0.dmu.get().shape}, e0 target shape: {self.e0.target.get().shape}")
       inputs = jnp.array(self.advance_process.pack_rows(self.T, t=lambda x: x, dt=self.dt))
       stateManager.state, z_codes = self.advance_process.scan(inputs)
       return z_codes
@@ -562,7 +572,7 @@ class HierarchicalPredictiveCoding():
 
 
 
-    def viz_recons(self, X_test, Xmu_test, image_shape=(28, 28), fname='recon'):
+    def viz_recons(self, X_test, Xmu_test, image_shape=(28, 28),  image_area_step=(0, 0), fname='recon'):
         """
         Generates and saves a plot of the reconstructed images for the
         given test input.
@@ -579,10 +589,48 @@ class HierarchicalPredictiveCoding():
             field_shape: 2-tuple specifying expected shape of receptive fields to plot (default=(28, 28))
         """
 
-        X_test = X_test.reshape(-1, image_shape[0] * image_shape[1])
-        Xmu_test = Xmu_test.reshape(-1, image_shape[0] * image_shape[1])
+        ix, iy = image_shape
+        ax, ay = self.area_shape
+        px, py = self.patch_shape
+        sx, sy = self.step_shape
+
+        s_ax, s_ay = image_area_step
+
+        ## ══════════════════════════════════════════════════════════════
+        ## if each area is patched
+        if self.area_shape != self.patch_shape:
+            nx = ax // px if sx == 0 else (ax - px) // sx + 1
+            ny = ay // py if sy == 0 else (ay - py) // sy + 1
+
+            Xmu_test = Xmu_test.reshape(-1, nx * ny, px, py)
+            Xmu_test = reconstruct(Xmu_test, (nx, ny), area_shape=self.area_shape,
+                                                       patch_shape=self.patch_shape,
+                                                       step_shape=self.step_shape)
+
+        ## ══════════════════════════════════════════════════════════════
+        ## if numbers of areas croped per image is > 1
+        if image_shape != self.area_shape:
+            n_ax = ix // ax if s_ax==0 else (ix - ax) // s_ax + 1
+            n_ay = iy // ay if s_ay==0 else (iy - ay) // s_ay + 1
+
+            X_test = X_test.reshape(-1, n_ax * n_ay, ax, ay)
+            X_test = reconstruct(X_test, (n_ax, n_ay), area_shape=image_shape,
+                                                       patch_shape=self.area_shape,
+                                                       step_shape=(s_ax, s_ay))
+
+            Xmu_test = Xmu_test.reshape(-1, n_ax * n_ay, ax, ay)
+            Xmu_test = reconstruct(Xmu_test, (n_ax, n_ay), area_shape=image_shape,
+                                                           patch_shape=self.area_shape,
+                                                           step_shape=(s_ax, s_ay))
+
+        ## ══════════════════════════════════════════════════════════════
+        ## areas are retrieved
+        X_test = X_test.reshape(-1, ix * iy)
+        Xmu_test = Xmu_test.reshape(-1, ix * iy)
 
         visualize([X_test.T, Xmu_test.T], [image_shape, image_shape], prefix=self.exp_dir + "/img_recons/{}".format(fname))
+
+
 
     def process(self, obs, adapt_synapses=False):
         """
@@ -620,6 +668,9 @@ class HierarchicalPredictiveCoding():
         obs_mu = self.e0.mu.get()   ## get reconstructed signal
 
         return obs_mu
+
+
+
 
 
 

@@ -1,12 +1,9 @@
-from jax import jit, random
+from jax import random
 import os
-from ngclearn import Context, numpy as jnp
-from hierarchical_pc import HierarchicalPredictiveCoding
-import sys, getopt as gopt, optparse, time
+from ngclearn import numpy as jnp
+from pc import HierarchicalPredictiveCoding
+import sys, getopt as gopt, time
 from ngclearn.components.input_encoders.ganglionCell import _create_patches
-
-import sympy
-
 
 """
 ################################################################################
@@ -16,8 +13,8 @@ This mode is fit to learn latent representations of the input and reconstructs
 input data sampled from the MNIST database. 
 
 Usage:
-$ python train_rpc.py --path_data="/path/to/dataset_arrays/" 
-                      --n_samples=-1 --n_iter=10
+$ python train_pc.py --model_name="sparsePC_patch" --path_data="/path/to/dataset_arrays/"                                                                                                                                                                                                                                               
+                   --n_samples=-1 --n_iter=10
 
 Note that there is an optional argument "--n_samples", which allows you to choose a
 number less than your argument dataset's total size N for cases where you are
@@ -31,35 +28,60 @@ called `testX.npy`.
 """
 
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 ## read in general program arguments
-options, remainder = gopt.getopt(sys.argv[1:], '', ["path_data=",
+options, remainder = gopt.getopt(sys.argv[1:], '', ["dataset_name=",
+                                                    "model_name="
                                                     "n_samples=",
                                                     "n_iter="])
 
-experiment_circuit_name = "pc_mlp"
-dataset_name = "/mnist"
+
+experiment_circuit_name = "lateralPC_patch"        ## lateralPC_patch, sparsePC_patch, lateralPC_mlp, sparsePC_mlp,
+dataset_name = "mnist"
 path_data = "../../data/" + dataset_name
-exp_dir = "exp/" + experiment_circuit_name + dataset_name
 
 n_samples = -1
-n_iter = 10                         ## total number passes through dataset
+n_iter = 10                                         ## total number passes through dataset
 iter_mod = 1
 
 for opt, arg in options:
     if opt in ("--path_data"):
         path_data = arg.strip()
+    elif opt in ("--model_name"):
+        experiment_circuit_name = arg.strip()
     elif opt in ("--n_samples"):
         n_samples = int(arg.strip())
     elif opt in ("--n_iter"):
         n_iter = int(arg.strip())
-print("Data Path: ", path_data)
+
+exp_dir = "exp/" + experiment_circuit_name
+# ═══════════════════════════════════════════════════════════════════════════
+MODEL_CONFIGS = {
+    "lateralPC_mlp": dict(use_lateral=True, adaptive_lateral=True, exc_inh=(+5, -5), r_prior=(None, 0.),
+                          area_shape=None, patch_shape=None, step_shape=None,
+                          p3_size=10, p2_size=32, p1_size=64,
+                          ),
+    "lateralPC_patch": dict(use_lateral=True, adaptive_lateral=True, exc_inh=(+5, -5), r_prior=(None, 0.),
+                            area_shape=None, patch_shape=(14, 14), step_shape=(7, 7),
+                            p3_size=10, p2_size=32, p1_size=64,
+                            ),
+    "sparsePC_mlp": dict(use_lateral=False, adaptive_lateral=False, exc_inh=(0., 0.), r_prior=("laplacian", 0.14),
+                         area_shape=None, patch_shape=None, step_shape=None,
+                         p3_size=10, p2_size=32, p1_size=64,
+                         ),
+    "sparsePC_patch": dict(use_lateral=False, adaptive_lateral=False, exc_inh=(0., 0.), r_prior=("laplacian", 0.14),
+                           area_shape=None, patch_shape=(14, 14), step_shape=(7, 7),
+                           p3_size=10, p2_size=32, p1_size=64,
+                           ),
+}
+
+pc_circuit = MODEL_CONFIGS[experiment_circuit_name]
 
 # ═══════════════════════════════════════════════════════════════════════════
 jnp.set_printoptions(suppress=True, precision=5)
 dkey = random.PRNGKey(1234)
-dkey, *subkeys = random.split(dkey, n_iter)
+dkey, *subkeys = random.split(dkey, n_iter + 10)
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Training Configuration
 shuffle = True
@@ -86,31 +108,40 @@ img_train = img_train.reshape(-1, *image_shape)
 img_test = img_test.reshape(-1, *image_shape)
 
 # ════  Stimuli Configuration  ══════════════════════════════════════════════
-area_shape = image_shape                    ## (ax, ay) = (ix, iy): full image
-(px, py) = patch_shape = image_shape        ## (ix, iy): full image
-(sx, sy) = step_shape = patch_shape         ## (sx, sy) --- ix = px + (nx-1) * sx
+(ax, ay) = area_shape = pc_circuit["area_shape"] or image_shape                                ## (ax, ay) = (ix, iy): full image
+(px, py) = patch_shape = pc_circuit["patch_shape"] or image_shape  ## None == full image
+(sx, sy) = step_shape = pc_circuit["step_shape"] or patch_shape    ## (sx, sy) --- ix = px + (nx-1) * sx
 
-n_cells = 1                     ## ==1 means full image at the time image
-n_p1 = 1                        ## number of h1 patches/PE-modules
-n_p2 = 1                        ## number of h2 patches/PE-modules
-n_p3 = 1                        ## number of h3 patches/PE-modules
+nx = (ax - px) // sx + 1 if sx > 0 else ax // px
+ny = (ay - py) // sy + 1 if sy > 0 else ay // py
 
-p3_size = 32                    ## h3 patch dimension
-p2_size = 128                   ## h2 patch dimension
-p1_size = 64                    ## h1 patch dimension
+n_cells = nx * ny                                 ## ==1 means full image at the time image
+n_p1 = nx * ny                                    ## number of h1 patches/PE-modules
+n_p2 = ny                                         ## number of h2 patches/PE-modules
+n_p3 = 1                                          ## number of h3 patches/PE-modules
+
+p3_size = pc_circuit["p3_size"]                   ## h3 patch dimension
+p2_size = pc_circuit["p2_size"]                   ## h2 patch dimension
+p1_size = pc_circuit["p1_size"]                   ## h1 patch dimension
+
 pin_size = patch_shape[0] * patch_shape[1]     ## input patch dim (== h1 neurons receptive field size)
 
 ## ═══════════════════════════════════════════════════════════════════════════
 ## Computed Dimensions
 h3_dim = p3_size * n_p3
-h2_dim = p2_size * n_p2                        # = 128 × 1  = 128
-h1_dim = p1_size * n_p1                        # =  32 × 3  = 96
-in_dim = pin_size * n_cells                   # = 256 × 3  = 768
+h2_dim = p2_size * n_p2                        ## = 128 × 1  = 128
+h1_dim = p1_size * n_p1                        ## =  32 × 3  = 96
+in_dim = pin_size * n_cells                    ## = 256 × 3  = 768
 
 ## ══════════════════════════════════════════════════════════════════════════
 ## Energy Dynamics
-T = 30                                      ## number E-steps
+T = 30                                         ## number E-steps
 dt = 1.
+lr = 0.005
+
+use_lateral = pc_circuit["use_lateral"]
+adaptive_lateral = pc_circuit["adaptive_lateral"]
+exc, inh = pc_circuit["exc_inh"]
 
 ## ══════════════════════════════════════════════════════════════════════════
 ## split the full image into local views for retinal ganglion cells local receptive fields
@@ -131,19 +162,20 @@ model = HierarchicalPredictiveCoding(dkey,
                                      patch_shape = patch_shape,
                                      step_shape = step_shape,
                                      batch_size = mb_size,
-                                     T=T, dt=dt,
-                                     tau_m=20,
-                                     lr=0.005,
-                                     act_fx = "relu",
-                                     r3_prior = ("laplacian", 0.14),
-                                     r2_prior = ("laplacian", 0.14),
-                                     r1_prior = ("laplacian", 0.14),
+                                     T=T, dt=dt, tau_m=20, act_fx = "relu",
+                                     use_lateral=use_lateral, adaptive_lateral=adaptive_lateral,
+                                     exc_inh=(exc, inh),
+                                     lat_eta=lr if use_lateral else 0.,
+                                     lr=lr,
+                                     r3_prior=pc_circuit["r_prior"],
+                                     r2_prior=pc_circuit["r_prior"],
+                                     r1_prior=pc_circuit["r_prior"],
                                      synaptic_prior=("ridge", 0.02),
                                      exp_dir=exp_dir, reset_exp_dir=True
                                      )
 
 model.save_to_disk()          # NOTE: save initial model parameters to disk, uncomment this line if we are loading a saved model
-model.load_from_disk(exp_dir) # NOTE: uncomment this line and comment the above lines to load a saved model
+# model.load_from_disk(exp_dir) # NOTE: uncomment this line and comment the above lines to load a saved model
 model.get_synapse_stats()
 model.viz_receptive_fields(max_n_vis=mb_vis_size, fname='erf_t0')
 
@@ -157,6 +189,7 @@ n_batch_train = x_train.shape[0] // mb_size
 ptrs_ = random.permutation(subkeys[1], x_test.shape[0])
 X_test = x_test[ptrs_, :]
 
+start = time.time()
 for i in range(n_iter):
     X = x_train
     # ════════════════════  shuffle   ═════════════════════
@@ -167,6 +200,7 @@ for i in range(n_iter):
     # ═══════════════════════════════════════════════════════════════════════════
     n_seen = 0
     cumultive_loss = 0
+    epoch_start = time.time()
     for nb in range(n_batch_train):
         # ════════════════════  get data batch  ═════════════════════
         mb = nb * mb_size
@@ -182,13 +216,15 @@ for i in range(n_iter):
         avg_loss = cumultive_loss / (n_seen + 1)
 
         # ═══════════════════   Progress Display  ════════════════════
-        print( f"\r "
-            f"│ Iter: {i:>1} "
-            f"│ Seen: {n_seen:>6} patterns "
-            f"│ Batch: {nb + 1:>4}/{n_batch_train:<4} "
-            f"│   Train-Loss: {avg_loss:>7.4f} ",
-            end="", flush=True
-        )
+        rate = n_seen / (time.time() - epoch_start)
+        print(f"\r "
+              f"│ Iter: {i:>1} "
+              f"│ Seen: {n_seen:>6} patterns "
+              f"│ Batch: {nb + 1:>4}/{n_batch_train:<4} "
+              f"│ Train-Loss: {avg_loss:>7.4f} "
+              f"│ {rate:>6.0f} patterns/s ",
+              end="", flush=True
+              )
 
     #############################################################################
     if (i+1) % iter_mod == 0:
@@ -197,22 +233,30 @@ for i in range(n_iter):
         ##################   infer test data
         Xb_mu = model.process(xb_test, adapt_synapses=False)
         ##################   test metric display
-        print(f"│ Test-Loss: {model.e0.L.get() / mb_vis_size :>7.4f}   │ \n")
+        print(f"│ Test-Loss: {model.e0.L.get() / mb_vis_size :>7.4f}   │")
         ##################   show test reconstruction
-        model.viz_recons(X_test=xb_test, Xmu_test=Xb_mu, image_shape=image_shape, fname=f"recons_t{i+1}")
+        model.viz_recons(X_test=xb_test, Xmu_test=Xb_mu, image_shape=image_shape,
+                         image_area_step=image_shape if pc_circuit["patch_shape"] else (0, 0),
+                         fname=f"recons_t{i + 1}")
 
         # ═══════════════════   L1 Synaptic Filters Display  ════════════════════
         model.viz_receptive_fields(max_n_vis=mb_vis_size, fname=f"erf_t{i+1}")
         ## ═════════════════════════ Save current state of synapses to disk  ═════════════════════════
         model.save_to_disk(params_only=True)    ## save final state of synapses to disk
 
-
-## ═══════════════════ Show Synapses Statistics  ══════════════════════
+print(f"\nTotal training time: {time.time() - start:.1f}s")
+## ════════════════ Show Synapses Statistics  ════════════════
 model.get_synapse_stats()
 
-## ═══════════════════ Save Model  ════════════════════════════════════
-## collect a test sample raster plot
-model.save_to_disk(params_only=True) ## save final model parameters to disk
+## ════════════════ Save Model  ══════════════════════════════
+## save final model parameters to disc
+model.save_to_disk(params_only=True)
+
+
+
+
+
+
 
 
 
