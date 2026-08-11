@@ -1,8 +1,8 @@
-from jax import random
 import os
+from jax import random
+import sys, getopt as gopt, time
 from ngclearn import numpy as jnp
 from pc import HierarchicalPredictiveCoding
-import sys, getopt as gopt, time
 from ngclearn.components.input_encoders.ganglionCell import _create_patches
 
 """
@@ -54,7 +54,6 @@ for opt, arg in options:
     elif opt in ("--n_iter"):
         n_iter = int(arg.strip())
 
-exp_dir = "exp/" + experiment_circuit_name
 # ═══════════════════════════════════════════════════════════════════════════
 MODEL_CONFIGS = {
     "lateralPC_mlp": dict(use_lateral=True, adaptive_lateral=True, exc_inh=(+5, -5), r_prior=(None, 0.),
@@ -76,12 +75,12 @@ MODEL_CONFIGS = {
 }
 
 pc_circuit = MODEL_CONFIGS[experiment_circuit_name]
+exp_dir = "exp/" + experiment_circuit_name
 
 # ═══════════════════════════════════════════════════════════════════════════
 jnp.set_printoptions(suppress=True, precision=5)
 dkey = random.PRNGKey(1234)
 dkey, *subkeys = random.split(dkey, n_iter + 10)
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Training Configuration
 shuffle = True
@@ -99,6 +98,7 @@ y_test = jnp.load(os.path.join(path_data, "testY.npy"))
 # sequential classes (not shuffled)
 img_train = img_train[jnp.argsort(jnp.argmax(y_train, axis=1))]
 img_test = img_test[jnp.argsort(jnp.argmax(y_test, axis=1))]
+y_test = y_test[jnp.argsort(jnp.argmax(y_test, axis=1))]
 
 image_size = img_train.shape[1]
 ix = iy = int(jnp.sqrt(image_size))
@@ -188,6 +188,7 @@ if n_samples > 0:
 n_batch_train = x_train.shape[0] // mb_size
 ptrs_ = random.permutation(subkeys[1], x_test.shape[0])
 X_test = x_test[ptrs_, :]
+Y_test = y_test[ptrs_, :]                   ## labels follow the same shuffle (valid while area_shape == image_shape)
 
 start = time.time()
 for i in range(n_iter):
@@ -226,23 +227,35 @@ for i in range(n_iter):
               end="", flush=True
               )
 
-    #############################################################################
+    ###########################################################################
     if (i+1) % iter_mod == 0:
-        # ═══════════════════   test phase  ════════════════════
-        xb_test = X_test[:mb_vis_size, :]
-        ##################   infer test data
-        Xb_mu = model.process(xb_test, adapt_synapses=False)
-        ##################   test metric display
-        print(f"│ Test-Loss: {model.e0.L.get() / mb_vis_size :>7.4f}   │")
-        ##################   show test reconstruction
-        model.viz_recons(X_test=xb_test, Xmu_test=Xb_mu, image_shape=image_shape,
-                         image_area_step=image_shape if pc_circuit["patch_shape"] else (0, 0),
-                         fname=f"recons_t{i + 1}")
-
-        # ═══════════════════   L1 Synaptic Filters Display  ════════════════════
+        ## ==============  L1 Synaptic Filters Display  =======================
         model.viz_receptive_fields(max_n_vis=mb_vis_size, fname=f"erf_t{i+1}")
-        ## ═════════════════════════ Save current state of synapses to disk  ═════════════════════════
-        model.save_to_disk(params_only=True)    ## save final state of synapses to disk
+        ## ==============  Save current state of synapses to disk  ============
+        model.save_to_disk(params_only=True)
+        
+        ## =========================   TEST PHASE  ============================
+        xb_test = X_test[:mb_vis_size, :]
+        #############   infer test data
+        Xb_mu = model.process(xb_test, adapt_synapses=False)
+        #############   Save latent codes to disk
+        model.collect_latents(X_test, Y_test, save=True)
+        Test_recon_loss = model.e0.L.get() / mb_vis_size
+
+        ## ==================== Reconstruction Metrics ====================
+        ######## Reconstruction Visualization 
+        model.viz_recons(xb_test, Xb_mu, image_shape, image_area_step=image_shape if pc_circuit["patch_shape"] else (0, 0), fname=f"recons_t{i + 1}")
+        ######## Reconstruction Loss 
+        print(f"│ Test-Loss: {Test_recon_loss :>7.4f}   │")
+
+        ## =================== Latent Variable Analysis ====================
+        ######## Effective Dimensionality 
+        model.get_eff_dims()
+        ######## Probe Accuracy 
+        model.get_probe_acc()
+        ######## t-SNE Visualization
+        model.plot_codes()
+
 
 print(f"\nTotal training time: {time.time() - start:.1f}s")
 ## ════════════════ Show Synapses Statistics  ════════════════
@@ -251,6 +264,7 @@ model.get_synapse_stats()
 ## ════════════════ Save Model  ══════════════════════════════
 ## save final model parameters to disc
 model.save_to_disk(params_only=True)
+
 
 
 
