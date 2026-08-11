@@ -1,6 +1,7 @@
 import os
 from ngclearn.utils.io_utils import makedir
 from jax import numpy as jnp, random, jit
+import numpy as np
 from ngclearn.utils.model_utils import normalize_matrix
 from ngclearn.utils.viz.synapse_plot import visualize
 from ngcsimlib.global_state import stateManager
@@ -8,6 +9,10 @@ from ngclearn import MethodProcess, Context
 from ngclearn.components import (RateCell, HebbianPatchedSynapse, GaussianErrorCell)
 from ngclearn.components.input_encoders.ganglionCell import _reconstruct as reconstruct
 from ngclearn.components.input_encoders.ganglionCell import RetinalGanglionCell
+
+from ngclearn.utils.analysis.effective_dim import rankme
+from ngclearn.utils.analysis import LinearProbe
+from ngclearn.utils.viz.dim_reduce import extract_tsne_latents, plot_latents
 
 
 class HierarchicalPredictiveCoding():
@@ -147,14 +152,14 @@ class HierarchicalPredictiveCoding():
             makedir(exp_dir)
             makedir(exp_dir + "/filters")
             makedir(exp_dir + "/img_recons")
-            makedir(exp_dir + "/raster")
+            makedir(exp_dir + "/analysis")
             print(" > Created experiment directory at ", exp_dir)
         else:
             print(" > Using existing experiment directory at ", exp_dir, " or creating if non-existent.")
             os.makedirs(exp_dir, exist_ok=True)
             os.makedirs(exp_dir + "/filters", exist_ok=True)
             os.makedirs(exp_dir + "/img_recons", exist_ok=True)
-            os.makedirs(exp_dir + "/raster", exist_ok=True)
+            os.makedirs(exp_dir + "/analysis", exist_ok=True)
 
         ## ══════════════ meta-parameters for model structure ══════════════
         self.in_dim = in_dim
@@ -570,8 +575,6 @@ class HierarchicalPredictiveCoding():
                               prefix=self.exp_dir + "/filters/L2_{}".format(fname))
                     ## ══════════════════════════════════════════════════════════════
 
-
-
     def viz_recons(self, X_test, Xmu_test, image_shape=(28, 28),  image_area_step=(0, 0), fname='recon'):
         """
         Generates and saves a plot of the reconstructed images for the
@@ -630,6 +633,85 @@ class HierarchicalPredictiveCoding():
 
         visualize([X_test.T, Xmu_test.T], [image_shape, image_shape], prefix=self.exp_dir + "/img_recons/{}".format(fname))
 
+    def get_latents(self):
+        return {"z1": self.z1.z.get(),
+                "z2": self.z2.z.get(),
+                "z3": self.z3.z.get()}
+
+
+    def process_test(self, X):
+        Zs = []
+        Lb = 0
+        mb_size = self.batch_size
+        for p in range(0, (X.shape[0] // mb_size) * mb_size, mb_size):
+            self.process(X[p:p + mb_size], adapt_synapses=False)
+            Lb += self.e0.L.get()
+            Zs.append(self.get_latents())
+        loss = Lb / len(X)
+        return Zs, loss
+
+    def collect_latents(self, Z, Y, save=True, fname="latents_codes"):
+        Y = Y[:len(Z) * self.batch_size]
+        Z = {name: jnp.concatenate([z[name] for z in Z], axis=0) for name in Z[0]}
+        if save:
+            self.save_codes(Z, Y, fname=fname)
+        return Z, Y
+
+    def save_codes(self, Z, Y, fname="latents_codes"):
+        self.latents_path = f"{self.exp_dir}/analysis"
+        np.savez(f"{self.latents_path}/{fname}.npz", Y=np.asarray(Y),
+                 **{k: np.asarray(v) for k, v in Z.items()})
+
+    def load_codes(self, fname="latents_codes"):
+        codes = np.load(f"{self.latents_path}/{fname}.npz")
+        Z = {n: codes[n] for n in codes.files if n != "Y"}
+        Y = jnp.asarray(codes["Y"])
+        return Z, Y
+
+
+    def get_eff_dims(self, fname="latents_codes"):
+        Z = self.load_codes(fname)[0]
+        eff_dims = {}
+        print("\n-------- Effective Dimensionality --------")
+        for name, z in Z.items():
+            eff_dim = float(rankme(z))
+            eff_dims[name] = float(rankme(z))
+            print(f"{name!r}: {eff_dim:>8.2f}     (% {100*eff_dim/z.shape[1]:>5.2f})")
+        print("------------------------------------------ \n")
+        return eff_dims
+
+
+    def get_probe_acc(self, fname="latents_codes"):
+        Z, Y = self.load_codes(fname)
+        dkey = random.PRNGKey(42)
+        C = Y.shape[1]
+        n_train = int(0.8 * Y.shape[0]) // self.batch_size * self.batch_size
+        n_test = (Y.shape[0] - n_train) // self.batch_size * self.batch_size
+
+        print("\n===============  Latents Probe Accuracy =================")
+        for name, z in Z.items():
+            Z_train, Y_train, Z_test, Y_test = z[:n_train], Y[:n_train], z[n_train:n_train + n_test], Y[n_train:n_train + n_test]
+            args = dict(source_seq_length=1, input_dim=z.shape[1], out_dim=C, batch_size=self.batch_size, dev_batch_size=self.batch_size)
+
+            print(f"{name!r} Linear Probe")
+            LinearProbe(dkey, use_softmax=False, **args).fit((Z_train, Y_train), (Z_test, Y_test), n_iter=20)
+            print(f"{name!r} Sofmax Probe")
+            LinearProbe(dkey, use_softmax=True, **args).fit((Z_train, Y_train), (Z_test, Y_test), n_iter=20)
+            print()
+        print("==============================================================")
+
+
+    def plot_codes(self, fname="latents_codes"):
+        Z, Y = self.load_codes(fname)
+        if fname == "latents_init":
+            for name, z in Z.items():
+                plot_latents(extract_tsne_latents(np.asarray(z)), np.asarray(Y),
+                             plot_fname=f"{self.latents_path}/tsne_{name}_init.jpg", alpha=0.3, cmap='tab10')
+        else:
+            for name, z in Z.items():
+                plot_latents(extract_tsne_latents(np.asarray(z)), np.asarray(Y),
+                             plot_fname=f"{self.latents_path}/tsne_{name}.jpg", alpha=0.3, cmap='tab10')
+
 
 
     def process(self, obs, adapt_synapses=False):
@@ -668,7 +750,6 @@ class HierarchicalPredictiveCoding():
         obs_mu = self.e0.mu.get()   ## get reconstructed signal
 
         return obs_mu
-
 
 
 
