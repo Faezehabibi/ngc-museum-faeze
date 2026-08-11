@@ -1,8 +1,8 @@
-from jax import random
 import os
+from jax import random
+import sys, getopt as gopt, time
 from ngclearn import numpy as jnp
 from pc import HierarchicalPredictiveCoding
-import sys, getopt as gopt, time
 from ngclearn.components.input_encoders.ganglionCell import _create_patches
 
 """
@@ -27,7 +27,6 @@ called `testX.npy`.
 ################################################################################
 """
 
-
 # ═══════════════════════════════════════════════════════════════════════════
 ## read in general program arguments
 options, remainder = gopt.getopt(sys.argv[1:], '', ["dataset_name=",
@@ -35,13 +34,12 @@ options, remainder = gopt.getopt(sys.argv[1:], '', ["dataset_name=",
                                                     "n_samples=",
                                                     "n_iter="])
 
-
-experiment_circuit_name = "lateralPC_patch"        ## lateralPC_patch, sparsePC_patch, lateralPC_mlp, sparsePC_mlp,
+experiment_circuit_name = "lateralPC_mlp"  ## lateralPC_patch, sparsePC_patch, lateralPC_mlp, sparsePC_mlp,
 dataset_name = "mnist"
 path_data = "../../data/" + dataset_name
 
 n_samples = -1
-n_iter = 10                                         ## total number passes through dataset
+n_iter = 10  ## total number passes through dataset
 iter_mod = 1
 
 for opt, arg in options:
@@ -54,34 +52,33 @@ for opt, arg in options:
     elif opt in ("--n_iter"):
         n_iter = int(arg.strip())
 
-exp_dir = "exp/" + experiment_circuit_name
 # ═══════════════════════════════════════════════════════════════════════════
 MODEL_CONFIGS = {
     "lateralPC_mlp": dict(use_lateral=True, adaptive_lateral=True, exc_inh=(+5, -5), r_prior=(None, 0.),
                           area_shape=None, patch_shape=None, step_shape=None,
-                          p3_size=10, p2_size=32, p1_size=64,
+                          p3_size=16, p2_size=32, p1_size=64,
                           ),
     "lateralPC_patch": dict(use_lateral=True, adaptive_lateral=True, exc_inh=(+5, -5), r_prior=(None, 0.),
                             area_shape=None, patch_shape=(14, 14), step_shape=(7, 7),
-                            p3_size=10, p2_size=32, p1_size=64,
+                            p3_size=16, p2_size=32, p1_size=64,
                             ),
     "sparsePC_mlp": dict(use_lateral=False, adaptive_lateral=False, exc_inh=(0., 0.), r_prior=("laplacian", 0.14),
                          area_shape=None, patch_shape=None, step_shape=None,
-                         p3_size=10, p2_size=32, p1_size=64,
+                         p3_size=16, p2_size=32, p1_size=64,
                          ),
     "sparsePC_patch": dict(use_lateral=False, adaptive_lateral=False, exc_inh=(0., 0.), r_prior=("laplacian", 0.14),
                            area_shape=None, patch_shape=(14, 14), step_shape=(7, 7),
-                           p3_size=10, p2_size=32, p1_size=64,
+                           p3_size=16, p2_size=32, p1_size=64,
                            ),
 }
 
 pc_circuit = MODEL_CONFIGS[experiment_circuit_name]
+exp_dir = "exp/" + experiment_circuit_name
 
 # ═══════════════════════════════════════════════════════════════════════════
 jnp.set_printoptions(suppress=True, precision=5)
 dkey = random.PRNGKey(1234)
 dkey, *subkeys = random.split(dkey, n_iter + 10)
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Training Configuration
 shuffle = True
@@ -99,6 +96,7 @@ y_test = jnp.load(os.path.join(path_data, "testY.npy"))
 # sequential classes (not shuffled)
 img_train = img_train[jnp.argsort(jnp.argmax(y_train, axis=1))]
 img_test = img_test[jnp.argsort(jnp.argmax(y_test, axis=1))]
+y_test = y_test[jnp.argsort(jnp.argmax(y_test, axis=1))]
 
 image_size = img_train.shape[1]
 ix = iy = int(jnp.sqrt(image_size))
@@ -108,34 +106,34 @@ img_train = img_train.reshape(-1, *image_shape)
 img_test = img_test.reshape(-1, *image_shape)
 
 # ════  Stimuli Configuration  ══════════════════════════════════════════════
-(ax, ay) = area_shape = pc_circuit["area_shape"] or image_shape                                ## (ax, ay) = (ix, iy): full image
+(ax, ay) = area_shape = pc_circuit["area_shape"] or image_shape  ## (ax, ay) = (ix, iy): full image
 (px, py) = patch_shape = pc_circuit["patch_shape"] or image_shape  ## None == full image
-(sx, sy) = step_shape = pc_circuit["step_shape"] or patch_shape    ## (sx, sy) --- ix = px + (nx-1) * sx
+(sx, sy) = step_shape = pc_circuit["step_shape"] or patch_shape  ## (sx, sy) --- ix = px + (nx-1) * sx
 
 nx = (ax - px) // sx + 1 if sx > 0 else ax // px
 ny = (ay - py) // sy + 1 if sy > 0 else ay // py
 
-n_cells = nx * ny                                 ## ==1 means full image at the time image
-n_p1 = nx * ny                                    ## number of h1 patches/PE-modules
-n_p2 = ny                                         ## number of h2 patches/PE-modules
-n_p3 = 1                                          ## number of h3 patches/PE-modules
+n_cells = nx * ny  ## ==1 means full image at the time image
+n_p1 = nx * ny  ## number of h1 patches/PE-modules
+n_p2 = ny  ## number of h2 patches/PE-modules
+n_p3 = 1  ## number of h3 patches/PE-modules
 
-p3_size = pc_circuit["p3_size"]                   ## h3 patch dimension
-p2_size = pc_circuit["p2_size"]                   ## h2 patch dimension
-p1_size = pc_circuit["p1_size"]                   ## h1 patch dimension
+p3_size = pc_circuit["p3_size"]  ## h3 patch dimension
+p2_size = pc_circuit["p2_size"]  ## h2 patch dimension
+p1_size = pc_circuit["p1_size"]  ## h1 patch dimension
 
-pin_size = patch_shape[0] * patch_shape[1]     ## input patch dim (== h1 neurons receptive field size)
+pin_size = patch_shape[0] * patch_shape[1]  ## input patch dim (== h1 neurons receptive field size)
 
 ## ═══════════════════════════════════════════════════════════════════════════
 ## Computed Dimensions
 h3_dim = p3_size * n_p3
-h2_dim = p2_size * n_p2                        ## = 128 × 1  = 128
-h1_dim = p1_size * n_p1                        ## =  32 × 3  = 96
-in_dim = pin_size * n_cells                    ## = 256 × 3  = 768
+h2_dim = p2_size * n_p2  ## = 128 × 1  = 128
+h1_dim = p1_size * n_p1  ## =  32 × 3  = 96
+in_dim = pin_size * n_cells  ## = 256 × 3  = 768
 
 ## ══════════════════════════════════════════════════════════════════════════
 ## Energy Dynamics
-T = 30                                         ## number E-steps
+T = 30  ## number E-steps
 dt = 1.
 lr = 0.005
 
@@ -145,11 +143,13 @@ exc, inh = pc_circuit["exc_inh"]
 
 ## ══════════════════════════════════════════════════════════════════════════
 ## split the full image into local views for retinal ganglion cells local receptive fields
-x_train = _create_patches(img_train, patch_shape=area_shape, step_shape=area_shape) ### shape: (N | n_areas | (area_shape))
-x_test = _create_patches(img_test, patch_shape=area_shape, step_shape=area_shape)   ### shape: (N | n_areas | (area_shape))
+x_train = _create_patches(img_train, patch_shape=area_shape,
+                          step_shape=area_shape)  ### shape: (N | n_areas | (area_shape))
+x_test = _create_patches(img_test, patch_shape=area_shape,
+                         step_shape=area_shape)  ### shape: (N | n_areas | (area_shape))
 
-x_train = x_train.reshape(-1, *area_shape)                                      ### shape: (n_total_obs | (area_shape))
-x_test = x_test.reshape(-1, *area_shape)                                        ### shape: (n_total_obs | (area_shape))
+x_train = x_train.reshape(-1, *area_shape)  ### shape: (n_total_obs | (area_shape))
+x_test = x_test.reshape(-1, *area_shape)  ### shape: (n_total_obs | (area_shape))
 
 # ═══════════════════════════════════════════════════════════════════════════
 ################################################################################
@@ -158,11 +158,11 @@ model = HierarchicalPredictiveCoding(dkey,
                                      circuit_name=experiment_circuit_name,
                                      h3_dim=h3_dim, h2_dim=h2_dim, h1_dim=h1_dim, in_dim=in_dim,
                                      n_p3=n_p3, n_p2=n_p2, n_p1=n_p1, n_inPatch=n_cells,
-                                     area_shape = area_shape,
-                                     patch_shape = patch_shape,
-                                     step_shape = step_shape,
-                                     batch_size = mb_size,
-                                     T=T, dt=dt, tau_m=20, act_fx = "relu",
+                                     area_shape=area_shape,
+                                     patch_shape=patch_shape,
+                                     step_shape=step_shape,
+                                     batch_size=mb_size,
+                                     T=T, dt=dt, tau_m=20, act_fx="relu",
                                      use_lateral=use_lateral, adaptive_lateral=adaptive_lateral,
                                      exc_inh=(exc, inh),
                                      lat_eta=lr if use_lateral else 0.,
@@ -174,7 +174,7 @@ model = HierarchicalPredictiveCoding(dkey,
                                      exp_dir=exp_dir, reset_exp_dir=True
                                      )
 
-model.save_to_disk()          # NOTE: save initial model parameters to disk, uncomment this line if we are loading a saved model
+model.save_to_disk()  # NOTE: save initial model parameters to disk, uncomment this line if we are loading a saved model
 # model.load_from_disk(exp_dir) # NOTE: uncomment this line and comment the above lines to load a saved model
 model.get_synapse_stats()
 model.viz_receptive_fields(max_n_vis=mb_vis_size, fname='erf_t0')
@@ -188,6 +188,19 @@ if n_samples > 0:
 n_batch_train = x_train.shape[0] // mb_size
 ptrs_ = random.permutation(subkeys[1], x_test.shape[0])
 X_test = x_test[ptrs_, :]
+Y_test = y_test[ptrs_, :]  ## labels follow the same shuffle (valid while area_shape == image_shape)
+
+# ════════════════════ Latent Variable Analysis ═════════════════════════════
+Z_test_init, L_test = model.process_test(X_test)
+######## Collect and Save Latents
+model.collect_latents(Z_test_init, Y_test, save=True, fname="latents_init")
+######## Effective Dimensionality
+model.get_eff_dims(fname="latents_init")
+######## Probe Accuracy
+model.get_probe_acc(fname="latents_init")
+######## t-SNE Visualization
+model.plot_codes(fname="latents_init")
+# ═══════════════════════════════════════════════════════════════════════════
 
 start = time.time()
 for i in range(n_iter):
@@ -204,15 +217,15 @@ for i in range(n_iter):
     for nb in range(n_batch_train):
         # ════════════════════  get data batch  ═════════════════════
         mb = nb * mb_size
-        Xb = X[mb:mb + mb_size, :]       # Extract batch: (B | ax, ay)
+        Xb = X[mb:mb + mb_size, :]  # Extract batch: (B | ax, ay)
 
         # ═══════════════════ Model Processing ══════════════════════
         Xmu = model.process(Xb, adapt_synapses=True)
 
         # ════════════════════   Metric Update  ═════════════════════
-        Lb = model.e0.L.get()                ## batch reconstruction loss
-        n_seen += Xb.shape[0]                ## Total patterns seen
-        cumultive_loss += Lb                 ## Accumulate loss
+        Lb = model.e0.L.get()  ## batch reconstruction loss
+        cumultive_loss += Lb  ## Accumulate loss
+        n_seen += Xb.shape[0]  ## Total patterns seen
         avg_loss = cumultive_loss / (n_seen + 1)
 
         # ═══════════════════   Progress Display  ════════════════════
@@ -226,23 +239,34 @@ for i in range(n_iter):
               end="", flush=True
               )
 
-    #############################################################################
-    if (i+1) % iter_mod == 0:
-        # ═══════════════════   test phase  ════════════════════
+    ###########################################################################
+    if (i + 1) % iter_mod == 0:
+        ## ==============  L1 Synaptic Filters Display  =======================
+        model.viz_receptive_fields(max_n_vis=mb_vis_size, fname=f"erf_t{i + 1}")
+        ## ==============  Save current state of synapses to disk  ============
+        model.save_to_disk(params_only=True)
+
+        ## =========================   TEST PHASE  ============================
+        #############   infer test data
+        Z_test, L_test = model.process_test(X_test)
+        ######## Reconstruction Loss
+        print(f"│ Test-Loss: {L_test :>7.4f}   │")
+
+        ########   Save latent codes to disk
+        model.collect_latents(Z_test, Y_test, save=True)
+        ######## Effective Dimensionality
+        model.get_eff_dims()
+        ######## Probe Accuracy
+        model.get_probe_acc()
+        ######## t-SNE Visualization
+        model.plot_codes()
+
+        #############   infer and visualize test data
         xb_test = X_test[:mb_vis_size, :]
-        ##################   infer test data
-        Xb_mu = model.process(xb_test, adapt_synapses=False)
-        ##################   test metric display
-        print(f"│ Test-Loss: {model.e0.L.get() / mb_vis_size :>7.4f}   │")
-        ##################   show test reconstruction
-        model.viz_recons(X_test=xb_test, Xmu_test=Xb_mu, image_shape=image_shape,
+        xb_mu = model.process(xb_test, adapt_synapses=False)
+        model.viz_recons(xb_test, xb_mu, image_shape,
                          image_area_step=image_shape if pc_circuit["patch_shape"] else (0, 0),
                          fname=f"recons_t{i + 1}")
-
-        # ═══════════════════   L1 Synaptic Filters Display  ════════════════════
-        model.viz_receptive_fields(max_n_vis=mb_vis_size, fname=f"erf_t{i+1}")
-        ## ═════════════════════════ Save current state of synapses to disk  ═════════════════════════
-        model.save_to_disk(params_only=True)    ## save final state of synapses to disk
 
 print(f"\nTotal training time: {time.time() - start:.1f}s")
 ## ════════════════ Show Synapses Statistics  ════════════════
