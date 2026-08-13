@@ -348,9 +348,9 @@ class HierarchicalPredictiveCoding():
                                 >> self.W1.evolve
                                 >> self.W2.evolve
                                 >> self.W3.evolve
-                                >> self.z1.Wl.evolve
-                                >> self.z2.Wl.evolve
-                                >> self.z3.Wl.evolve
+                                >> self.z1.evolve
+                                >> self.z2.evolve
+                                >> self.z3.evolve
                                 )
 
     def batch_setup(self):
