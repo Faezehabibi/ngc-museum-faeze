@@ -186,9 +186,9 @@ class HierarchicalPredictiveCoding():
 
         exc, inh = exc_inh
         d3, d2, d1 = h3_dim // n_p3, h2_dim // n_p2, h1_dim // n_p1
-        exc_inh3 = (exc / (d3 - 1), inh / (d3 - 1))  # block_dim(z3) == d3
-        exc_inh2 = (exc / (d2 - 1), inh / (d2 - 1))  # block_dim(z2) == d2
-        exc_inh1 = (exc / (d1 - 1), inh / (d1 - 1))  # block_dim(z1) == d1
+        exc_inh3 = (exc / (d3 - 1), inh / (d3 - 1)) if d3 > 1 else 0   ## block_dim(z3) == d3
+        exc_inh2 = (exc / (d2 - 1), inh / (d2 - 1)) if d2 > 1 else 0   ## block_dim(z2) == d2
+        exc_inh1 = (exc / (d1 - 1), inh / (d1 - 1)) if d1 > 1 else 0   ## block_dim(z1) == d1
 
         ## ═════════════════════ Synaptses parameters ═══════════════════
         w_bound = 0.                                                     ## norm constraint value
@@ -750,6 +750,7 @@ class HierarchicalPredictiveCoding():
         obs_mu = self.e0.mu.get()   ## get reconstructed signal
 
         return obs_mu
+
 
 
 
