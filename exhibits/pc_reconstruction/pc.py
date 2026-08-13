@@ -705,11 +705,11 @@ class HierarchicalPredictiveCoding():
         Z, Y = self.load_codes(fname)
         if fname == "latents_init":
             for name, z in Z.items():
-                plot_latents(extract_tsne_latents(np.asarray(z)), np.asarray(Y),
+                plot_latents(extract_tsne_latents(np.asarray(z), verbose=0), np.asarray(Y),
                              plot_fname=f"{self.latents_path}/tsne_{name}_init.jpg", alpha=0.3, cmap='tab10')
         else:
             for name, z in Z.items():
-                plot_latents(extract_tsne_latents(np.asarray(z)), np.asarray(Y),
+                plot_latents(extract_tsne_latents(np.asarray(z), verbose=0), np.asarray(Y),
                              plot_fname=f"{self.latents_path}/tsne_{name}.jpg", alpha=0.3, cmap='tab10')
 
 
